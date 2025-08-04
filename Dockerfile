@@ -13,5 +13,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # アプリケーションファイルをコピー
 COPY . .
 
-# アプリケーション起動コマンド
-CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "main:app"]
+# アプリケーション起動コマンド（Render用）
+CMD ["gunicorn", "--bind", "0.0.0.0:${PORT}", "main:app"]
