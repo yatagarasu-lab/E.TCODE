@@ -1,12 +1,23 @@
-# dropbox_integration.py
-
 from flask import request, jsonify
 import json
 import datetime
+import os
 
 def log_event(message):
-    """ログを表示（将来的にファイル保存などに拡張可）"""
-    print(f"[{datetime.datetime.now().isoformat()}] {message}")
+    """ログを表示 + ログファイルに保存"""
+    timestamp = datetime.datetime.now().isoformat()
+    log_text = f"[{timestamp}] {message}"
+
+    # コンソールに表示
+    print(log_text)
+
+    # ファイルにも追記保存（logs/webhook_log.txt）
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open("logs/webhook_log.txt", "a", encoding="utf-8") as f:
+            f.write(log_text + "\n")
+    except Exception as e:
+        print(f"[{timestamp}] ログファイル保存エラー: {e}")
 
 def handle_dropbox_webhook():
     """
