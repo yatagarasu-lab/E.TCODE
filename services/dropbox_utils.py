@@ -1,40 +1,37 @@
-import dropbox
 import os
+import dropbox
 
-# 環境変数から取得
-DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
+# Dropbox API に接続するための関数
+def get_dropbox_client():
+    refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN")
+    app_key = os.environ.get("DROPBOX_APP_KEY")
+    app_secret = os.environ.get("DROPBOX_APP_SECRET")
 
-# Dropbox セッション初期化
-def get_dropbox():
-    if not DROPBOX_REFRESH_TOKEN or not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET:
-        raise Exception("Dropbox環境変数が未設定です。")
-    
-    oauth_result = dropbox.DropboxOAuth2FlowNoRedirect(
-        consumer_key=DROPBOX_APP_KEY,
-        consumer_secret=DROPBOX_APP_SECRET
+    if not all([refresh_token, app_key, app_secret]):
+        raise ValueError("Dropbox 認証情報が不足しています")
+
+    return dropbox.Dropbox(
+        app_key=app_key,
+        app_secret=app_secret,
+        oauth2_refresh_token=refresh_token
     )
-    dbx = dropbox.Dropbox(
-        oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
-        app_key=DROPBOX_APP_KEY,
-        app_secret=DROPBOX_APP_SECRET
-    )
-    return dbx
 
-# ファイル一覧を取得（指定フォルダ）
-def get_file_list(folder_path):
-    dbx = get_dropbox()
-    result = dbx.files_list_folder(folder_path)
-    return [entry.name for entry in result.entries if isinstance(entry, dropbox.files.FileMetadata)]
+# 指定フォルダ内のファイル一覧を取得
+def list_files(folder_path="/Apps/slot-data-analyzer"):
+    dbx = get_dropbox_client()
+    res = dbx.files_list_folder(folder_path)
+    return res.entries
 
-# ファイルの内容を取得（テキスト）
-def download_file(file_path):
-    dbx = get_dropbox()
-    metadata, res = dbx.files_download(file_path)
+# ファイルをダウンロードして内容を返す
+def download_file(path):
+    dbx = get_dropbox_client()
+    _, res = dbx.files_download(path)
     return res.content.decode("utf-8")
 
-# ファイルをアップロード（テキストで上書き保存）
-def upload_file(file_path, content):
-    dbx = get_dropbox()
-    dbx.files_upload(content.encode("utf-8"), file_path, mode=dropbox.files.WriteMode.overwrite)
+# 最も新しいファイルを取得
+def get_latest_file_path(folder_path="/Apps/slot-data-analyzer"):
+    files = list_files(folder_path)
+    if not files:
+        return None
+    latest = max(files, key=lambda f: f.client_modified)
+    return latest.path_display
