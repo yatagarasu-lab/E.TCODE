@@ -1,18 +1,17 @@
-# Pythonベースの軽量イメージ
+# 使用するベースイメージ
 FROM python:3.11-slim
 
-# 作業ディレクトリ
+# 作業ディレクトリを作成
 WORKDIR /app
 
-# 必要ファイルを全てコピー
+# 依存関係ファイルをコピー
+COPY requirements.txt .
+
+# ライブラリをインストール
+RUN pip install --no-cache-dir -r requirements.txt
+
+# アプリケーションファイルをコピー
 COPY . .
 
-# ライブラリのインストール
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-# Renderの環境変数でPORT指定されるので、それに従う
-ENV PORT=10000
-
-# Flaskをこのポートで起動する
+# アプリケーション起動コマンド
 CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "main:app"]
