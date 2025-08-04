@@ -35,3 +35,13 @@ def get_latest_file_path(folder_path="/Apps/slot-data-analyzer"):
         return None
     latest = max(files, key=lambda f: f.client_modified)
     return latest.path_display
+
+# WebhookログファイルをDropboxから読み取る（新機能）
+def read_log_file(file_path="/logs/webhook_log.txt"):
+    try:
+        content = download_file(file_path)
+        print(f"[log] ログファイル読み取り成功: {file_path}")
+        return content
+    except Exception as e:
+        print(f"[error] ログファイル読み取り失敗: {e}")
+        return f"ログ取得エラー: {e}"
