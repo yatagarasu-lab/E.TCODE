@@ -1,24 +1,18 @@
-from flask import Flask, request, jsonify
-import os
+# main.py（E.T Code）
+
+from flask import Flask, request
+from update_code import handle_code_update
 
 app = Flask(__name__)
 
+@app.route("/")
+def index():
+    return "E.T Code is running!"
+
+# 八咫烏からコードを受信するエンドポイント
 @app.route("/update-code", methods=["POST"])
 def update_code():
-    data = request.json
-    filename = data.get("filename")
-    code = data.get("code")
-
-    if not filename or not code:
-        return jsonify({"error": "filename または code が不足しています"}), 400
-
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        return jsonify({"message": f"{filename} を正常に更新しました"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return handle_code_update()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
