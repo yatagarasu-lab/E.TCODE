@@ -1,65 +1,42 @@
-from flask import Flask, request, jsonify
+# dropbox_integration.py に追加
 import os
-import json
-import datetime
+import dropbox
+from datetime import datetime
+from requests.auth import HTTPBasicAuth
+import requests
 
-app = Flask(__name__)
+# 認証（統一）
+def get_access_token():
+    url = "https://api.dropbox.com/oauth2/token"
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": os.getenv("DROPBOX_REFRESH_TOKEN")
+    }
+    auth = HTTPBasicAuth(os.getenv("DROPBOX_CLIENT_ID"), os.getenv("DROPBOX_CLIENT_SECRET"))
+    res = requests.post(url, data=data, auth=auth)
+    return res.json()["access_token"]
 
-# ログ保存関数
-def log_event(message):
-    timestamp = datetime.datetime.now().isoformat()
-    log_text = f"[{timestamp}] {message}"
-    print(log_text)
+def get_dbx():
+    return dropbox.Dropbox(get_access_token())
+
+# コードをDropboxにアップロード
+def update_yatagarasu_code(filename, code_str):
+    path = f"/Apps/yatagarasu/code/{filename}"
+    dbx = get_dbx()
+    dbx.files_upload(code_str.encode("utf-8"), path, mode=dropbox.files.WriteMode.overwrite)
+
+# ログをDropboxに追記保存
+def write_dropbox_log(message):
+    log_path = "/Apps/yatagarasu/logs/" + datetime.now().strftime("%Y%m%d") + "_log.txt"
+    timestamp = datetime.now().isoformat()
+    dbx = get_dbx()
 
     try:
-        os.makedirs("logs", exist_ok=True)
-        with open("logs/webhook_log.txt", "a", encoding="utf-8") as f:
-            f.write(log_text + "\n")
-    except Exception as e:
-        print(f"[{timestamp}] ログファイル保存エラー: {e}")
+        # 既存ログ読み込み
+        _, res = dbx.files_download(log_path)
+        existing = res.content.decode("utf-8")
+    except dropbox.exceptions.ApiError:
+        existing = ""
 
-# Dropbox Webhook エンドポイント処理
-@app.route("/dropbox", methods=["GET", "POST"])
-def dropbox_webhook():
-    if request.method == "GET":
-        challenge = request.args.get("challenge")
-        log_event(f"Webhook challenge received: {challenge}")
-        return challenge, 200
-
-    elif request.method == "POST":
-        try:
-            payload = request.get_data(as_text=True)
-            log_event(f"Webhook POST payload received:\n{payload}")
-
-            try:
-                json_payload = json.loads(payload)
-                log_event(f"Parsed JSON payload:\n{json.dumps(json_payload, indent=2)}")
-            except json.JSONDecodeError:
-                log_event("Payload is not valid JSON.")
-
-            return jsonify({"status": "Webhook received"}), 200
-
-        except Exception as e:
-            log_event(f"Error in webhook processing: {e}")
-            return jsonify({"error": str(e)}), 500
-
-# ログファイル読み取りエンドポイント
-@app.route("/read-log", methods=["GET"])
-def read_log():
-    file_path = request.args.get("path", "logs/webhook_log.txt")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return jsonify({"file": file_path, "content": content})
-    except Exception as e:
-        return jsonify({"error": f"ログ取得エラー: {str(e)}"}), 500
-
-# 動作確認用
-@app.route("/")
-def index():
-    return "Dropbox Webhook Bot is running!"
-
-if __name__ == "__main__":
-    print("Flask app 起動")
-    app.run(host="0.0.0.0", port=10000)
-    print("完了")
+    new_log = existing + f"[{timestamp}] {message}\n"
+    dbx.files_upload(new_log.encode("utf-8"), log_path, mode=dropbox.files.WriteMode.overwrite)
