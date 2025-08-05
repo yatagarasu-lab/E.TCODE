@@ -1,10 +1,9 @@
-# etcode_sender.py（E.T Code 側の送信スクリプト）
+# etcode_sender.py
 
 import requests
-import json
 
-# あなたのRender URLをここに
-RENDER_URL = "https://your-render-url.onrender.com/update-code"
+# 🛑 あなたの八咫烏の Render URL に変更してください
+RENDER_URL = "https://your-yatagarasu-app.onrender.com/update-code"
 
 def send_code(filename, code):
     payload = {
@@ -12,17 +11,21 @@ def send_code(filename, code):
         "code": code
     }
 
-    response = requests.post(RENDER_URL, json=payload)
+    try:
+        response = requests.post(RENDER_URL, json=payload)
 
-    if response.status_code == 200:
-        print(f"[成功] {filename} を八咫烏に送信しました")
-    else:
-        print(f"[失敗] ステータス: {response.status_code}")
-        print(response.text)
+        if response.status_code == 200:
+            print(f"[✅ 成功] {filename} を八咫烏に送信しました")
+        else:
+            print(f"[❌ 失敗] ステータス: {response.status_code}")
+            print(response.text)
 
-# 例：main.py を書き換えたいとき
+    except Exception as e:
+        print(f"[❗ エラー] {str(e)}")
+
+# ✅ 使用例：main.py を書き換える
 if __name__ == "__main__":
     code_to_send = """
-print("これはE.T Codeから送信されたコードです！")
+print("これは E.T Code から送信された新しいコードです！")
 """
     send_code("main.py", code_to_send)
