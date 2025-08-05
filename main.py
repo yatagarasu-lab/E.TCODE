@@ -1,33 +1,24 @@
-# main.py（E.T Code 側の送信スクリプト）
+from flask import Flask, request, jsonify
+import os
 
-import requests
-import json
+app = Flask(__name__)
 
-# 八咫烏（Render側）のURLをここにセット（例は仮）
-RENDER_URL = "https://your-render-url.onrender.com/update-code"
+@app.route("/update-code", methods=["POST"])
+def update_code():
+    data = request.json
+    filename = data.get("filename")
+    code = data.get("code")
 
-def send_code(filename, code):
-    """指定したファイル名とコードを八咫烏に送信する"""
-    payload = {
-        "filename": filename,
-        "code": code
-    }
+    if not filename or not code:
+        return jsonify({"error": "filename または code が不足しています"}), 400
 
     try:
-        response = requests.post(RENDER_URL, json=payload)
-        if response.status_code == 200:
-            print(f"[成功] {filename} を八咫烏に送信しました")
-        else:
-            print(f"[失敗] ステータス: {response.status_code}")
-            print(response.text)
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        return jsonify({"message": f"{filename} を正常に更新しました"}), 200
     except Exception as e:
-        print(f"[エラー] 送信中に問題が発生しました: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # 🔁 書き換えたいコードをここに記述（例：main.py）
-    filename_to_update = "main.py"
-    code_to_send = """
-print("これはE.T Codeから送信されたコードです！")
-"""
-
-    send_code(filename_to_update, code_to_send)
+    app.run(debug=True)
