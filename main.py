@@ -1,34 +1,36 @@
-from flask import Flask, request
+from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
+
+from dropbox_utils import save_log_to_dropbox, load_log_from_dropbox
+
 import os
-from dropbox_utils import save_log_to_dropbox  # ログ保存用モジュール
 
-# 環境変数からLINE設定を取得
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+app = Flask(__name__)
 
-# LINE APIの初期化
+# LINE BOT設定（環境変数で設定）
+LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
+
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# Flaskアプリの初期化
-app = Flask(__name__)
+@app.route("/", methods=["GET"])
+def index():
+    return "OK"
 
-# Webhookエンドポイント
-@app.route("/webhook", methods=["POST"])
-def webhook():
+@app.route("/callback", methods=["POST"])
+def callback():
     signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
 
     try:
         handler.handle(body, signature)
-    except Exception as e:
-        return "Error", 400
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
 
-    return "OK", 200
-
-# メッセージ受信処理
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text.strip()
@@ -47,19 +49,38 @@ def handle_message(event):
                 TextSendMessage(text=result)
             )
             return
-        except Exception:
+        except Exception as e:
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text="❌ コマンド形式エラー（保存:ファイル名 内容:内容）で送信してください）")
             )
             return
 
-    # ✅ 通常メッセージ応答（任意でカスタマイズ可能）
+    # ✅ ログ読み込みコマンド（例：読み込み:log1.txt）
+    if user_msg.startswith("読み込み:"):
+        try:
+            filename = user_msg.replace("読み込み:", "").strip()
+            content = load_log_from_dropbox(filename)
+            if len(content) <= 4000:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=content)
+                )
+            else:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="✅ 読み込み成功（内容が長いため省略）")
+                )
+            return
+        except Exception as e:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="❌ 読み込み失敗（ファイルが存在しない可能性）")
+            )
+            return
+
+    # 通常返信
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="ありがとうございます。")
+        TextSendMessage(text="ありがとうございます")
     )
-
-# アプリ起動（Renderでは不要だがローカル動作確認用）
-if __name__ == "__main__":
-    app.run()
