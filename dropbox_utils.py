@@ -1,42 +1,40 @@
-import os
 import dropbox
-from datetime import datetime
-from dropbox.exceptions import ApiError, AuthError
+import os
 
-# Dropboxにログを保存する関数
+# 環境変数からDropbox設定を取得
+DROPBOX_CLIENT_ID = os.getenv("DROPBOX_CLIENT_ID")
+DROPBOX_CLIENT_SECRET = os.getenv("DROPBOX_CLIENT_SECRET")
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+
+# Dropboxフルアクセス用スコープとリフレッシュトークンで認証
+def get_dropbox_client():
+    from dropbox.oauth import DropboxOAuth2FlowNoRedirect
+
+    if not (DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET and DROPBOX_REFRESH_TOKEN):
+        raise Exception("❌ Dropboxの認証情報が不足しています。")
+
+    from dropbox.oauth import DropboxOAuth2FlowNoRedirect
+    from dropbox import Dropbox, DropboxOAuth2FlowNoRedirect
+
+    from dropbox.oauth import OAuth2AccessToken
+    from dropbox.common import new_session
+
+    session = new_session()
+    oauth2_access_token, _ = session.refresh_access_token(
+        client_id=DROPBOX_CLIENT_ID,
+        client_secret=DROPBOX_CLIENT_SECRET,
+        refresh_token=DROPBOX_REFRESH_TOKEN
+    )
+
+    return dropbox.Dropbox(oauth2_access_token)
+
+# ログをDropboxに保存する関数
 def save_log_to_dropbox(filename: str, content: str) -> str:
     try:
-        # 環境変数から認証情報を取得
-        app_key = os.getenv("DROPBOX_APP_KEY")
-        app_secret = os.getenv("DROPBOX_APP_SECRET")
-        refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
+        dbx = get_dropbox_client()
+        dropbox_path = f"/E.T Code Logs/{filename}"
 
-        if not all([app_key, app_secret, refresh_token]):
-            return "❌ Dropbox認証情報が不足しています（環境変数を確認してください）"
-
-        # Dropboxクライアントを初期化
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=refresh_token,
-            app_key=app_key,
-            app_secret=app_secret
-        )
-
-        # 保存するファイルパス（タイムスタンプ付き）
-        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        dropbox_path = f"/E.T.Code/logs/{now}_{filename}"
-
-        # アップロード処理（文字列 → バイト列に変換）
-        dbx.files_upload(
-            content.encode("utf-8"),
-            dropbox_path,
-            mode=dropbox.files.WriteMode("overwrite")
-        )
-
-        return f"✅ Dropboxに保存しました：{dropbox_path}"
-
-    except AuthError:
-        return "❌ Dropbox認証エラーが発生しました（トークンが無効または期限切れの可能性があります）"
-    except ApiError as e:
-        return f"❌ Dropbox APIエラー: {e}"
+        dbx.files_upload(content.encode(), dropbox_path, mode=dropbox.files.WriteMode.overwrite)
+        return f"✅ 保存完了：{filename}"
     except Exception as e:
-        return f"❌ 保存処理で予期せぬエラーが発生しました: {str(e)}"
+        return f"❌ 保存失敗: {str(e)}"
