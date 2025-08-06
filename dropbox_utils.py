@@ -1,63 +1,42 @@
 import os
 import dropbox
 from datetime import datetime
-from requests.auth import HTTPBasicAuth
-import requests
+from dropbox.exceptions import ApiError, AuthError
 
-# --- 環境変数からDropbox認証情報を取得 ---
-DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
-DROPBOX_CLIENT_ID = os.environ.get("DROPBOX_CLIENT_ID")
-DROPBOX_CLIENT_SECRET = os.environ.get("DROPBOX_CLIENT_SECRET")
-
-# --- アクセストークンの取得 ---
-def get_access_token():
-    url = "https://api.dropbox.com/oauth2/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": DROPBOX_REFRESH_TOKEN,
-    }
-    auth = HTTPBasicAuth(DROPBOX_CLIENT_ID, DROPBOX_CLIENT_SECRET)
-    res = requests.post(url, data=data, auth=auth)
-    return res.json()["access_token"]
-
-# --- Dropbox APIインスタンスの取得 ---
-def get_dbx():
-    access_token = get_access_token()
-    return dropbox.Dropbox(access_token)
-
-# --- ログファイルのパス ---
-LOG_FILE_PATH = "webhook_log.txt"
-
-# --- ログをDropbox上のファイルとして保存 ---
-def log_event(message):
-    timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-    log_line = f"{timestamp} {message}\n"
-    with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-        f.write(log_line)
-
-# --- Dropboxログファイルの読み取り ---
-def read_log_file(path="/logs/webhook_log.txt"):
+# Dropboxにログを保存する関数
+def save_log_to_dropbox(filename: str, content: str) -> str:
     try:
-        dbx = get_dbx()
-        _, res = dbx.files_download(path)
-        content = res.content.decode("utf-8")
-        return content
-    except Exception as e:
-        return f"ログファイルの読み取りに失敗しました: {e}"
+        # 環境変数から認証情報を取得
+        app_key = os.getenv("DROPBOX_APP_KEY")
+        app_secret = os.getenv("DROPBOX_APP_SECRET")
+        refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
 
-# --- E.T Code から送られたコードをDropboxに保存 ---
-def save_code_to_dropbox(filename, code):
-    try:
-        dbx = get_dbx()
-        path = f"/Apps/slot-data-analyzer/{filename}"
-        dbx.files_upload(
-            code.encode("utf-8"),
-            path,
-            mode=dropbox.files.WriteMode("overwrite"),
-            mute=True
+        if not all([app_key, app_secret, refresh_token]):
+            return "❌ Dropbox認証情報が不足しています（環境変数を確認してください）"
+
+        # Dropboxクライアントを初期化
+        dbx = dropbox.Dropbox(
+            oauth2_refresh_token=refresh_token,
+            app_key=app_key,
+            app_secret=app_secret
         )
-        log_event(f"Dropboxに {filename} を保存しました。パス: {path}")
-        return True, f"{filename} をDropboxに保存しました。"
+
+        # 保存するファイルパス（タイムスタンプ付き）
+        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dropbox_path = f"/E.T.Code/logs/{now}_{filename}"
+
+        # アップロード処理（文字列 → バイト列に変換）
+        dbx.files_upload(
+            content.encode("utf-8"),
+            dropbox_path,
+            mode=dropbox.files.WriteMode("overwrite")
+        )
+
+        return f"✅ Dropboxに保存しました：{dropbox_path}"
+
+    except AuthError:
+        return "❌ Dropbox認証エラーが発生しました（トークンが無効または期限切れの可能性があります）"
+    except ApiError as e:
+        return f"❌ Dropbox APIエラー: {e}"
     except Exception as e:
-        log_event(f"Dropbox保存エラー: {e}")
-        return False, str(e)
+        return f"❌ 保存処理で予期せぬエラーが発生しました: {str(e)}"
