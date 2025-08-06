@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: E.T_Codelabo
+    env: python
+    buildCommand: ""
+    startCommand: "gunicorn main:app"
+    envVars:
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_CLIENT_ID
+        sync: false
+      - key: DROPBOX_CLIENT_SECRET
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_USER_ID
+        sync: false
