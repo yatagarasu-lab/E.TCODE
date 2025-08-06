@@ -1,37 +1,23 @@
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
-
+import datetime
 import os
+from dropbox import Dropbox, exceptions
 
-app = Flask(__name__)
+# Dropbox 初期化（ET_CODE_DROPBOX_TOKEN はすでに登録済み前提）
+DROPBOX_TOKEN = os.getenv("ET_CODE_DROPBOX_TOKEN")
+dbx = Dropbox(DROPBOX_TOKEN)
 
-# 環境変数からトークンを取得
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
-# ✅ この部分が /callback のエントリーポイント
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature")
-
-    body = request.get_data(as_text=True)
+def save_log_to_dropbox(log_text: str, prefix: str = "gpt_log") -> str:
+    """
+    会話ログをDropboxに保存する（ファイル名にタイムスタンプ付き）
+    """
+    now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{prefix}_{now}.txt"
+    dropbox_path = f"/logs/{filename}"
 
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-
-    return 'OK'
-
-# イベントハンドラー（例）
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text="ありがとうございます")
-    )
+        dbx.files_upload(log_text.encode('utf-8'), dropbox_path, mode=dropbox.files.WriteMode("add"))
+        print(f"✅ ログをDropboxに保存しました: {dropbox_path}")
+        return filename
+    except exceptions.ApiError as e:
+        print(f"❌ Dropboxアップロード失敗: {e}")
+        return ""
