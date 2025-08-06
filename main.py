@@ -66,3 +66,20 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))  # Renderでは10000番ポート
     app.run(host="0.0.0.0", port=port)
+    # ✅ ログ保存関数（Dropboxに書き込み）
+def save_log_to_dropbox(filename: str, content: str) -> str:
+    """
+    指定された内容（content）をDropboxの /logs/{filename} に保存する。
+    """
+    try:
+        path = f"/logs/{filename}"
+        dbx.files_upload(
+            content.encode("utf-8"),
+            path,
+            mode=dropbox.files.WriteMode("overwrite")
+        )
+        print(f"✅ ログ '{filename}' 保存成功")
+        return f"保存成功: {filename}"
+    except dropbox.exceptions.ApiError as e:
+        print(f"❌ Dropboxログ保存エラー: {e}")
+        return f"保存エラー: {filename}"
