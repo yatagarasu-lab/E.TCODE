@@ -1,40 +1,32 @@
 import dropbox
 import os
 
-# 環境変数からDropbox設定を取得
-DROPBOX_CLIENT_ID = os.getenv("DROPBOX_CLIENT_ID")
-DROPBOX_CLIENT_SECRET = os.getenv("DROPBOX_CLIENT_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+# Dropbox設定
+DROPBOX_REFRESH_TOKEN = os.environ["DROPBOX_REFRESH_TOKEN"]
+DROPBOX_APP_KEY = os.environ["DROPBOX_APP_KEY"]
+DROPBOX_APP_SECRET = os.environ["DROPBOX_APP_SECRET"]
 
-# Dropboxフルアクセス用スコープとリフレッシュトークンで認証
-def get_dropbox_client():
-    from dropbox.oauth import DropboxOAuth2FlowNoRedirect
+# 認証
+dbx = dropbox.Dropbox(
+    app_key=DROPBOX_APP_KEY,
+    app_secret=DROPBOX_APP_SECRET,
+    oauth2_refresh_token=DROPBOX_REFRESH_TOKEN
+)
 
-    if not (DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET and DROPBOX_REFRESH_TOKEN):
-        raise Exception("❌ Dropboxの認証情報が不足しています。")
-
-    from dropbox.oauth import DropboxOAuth2FlowNoRedirect
-    from dropbox import Dropbox, DropboxOAuth2FlowNoRedirect
-
-    from dropbox.oauth import OAuth2AccessToken
-    from dropbox.common import new_session
-
-    session = new_session()
-    oauth2_access_token, _ = session.refresh_access_token(
-        client_id=DROPBOX_CLIENT_ID,
-        client_secret=DROPBOX_CLIENT_SECRET,
-        refresh_token=DROPBOX_REFRESH_TOKEN
-    )
-
-    return dropbox.Dropbox(oauth2_access_token)
-
-# ログをDropboxに保存する関数
-def save_log_to_dropbox(filename: str, content: str) -> str:
+def save_log_to_dropbox(filename, content):
+    """ログをDropboxに保存する"""
+    path = f"/{filename}" if not filename.startswith("/") else filename
     try:
-        dbx = get_dropbox_client()
-        dropbox_path = f"/E.T Code Logs/{filename}"
-
-        dbx.files_upload(content.encode(), dropbox_path, mode=dropbox.files.WriteMode.overwrite)
-        return f"✅ 保存完了：{filename}"
+        dbx.files_upload(content.encode("utf-8"), path, mode=dropbox.files.WriteMode.overwrite)
+        return f"✅ 保存成功: {filename}"
     except Exception as e:
-        return f"❌ 保存失敗: {str(e)}"
+        return f"❌ 保存エラー: {str(e)}"
+
+def load_log_from_dropbox(filename):
+    """Dropboxからログファイルの内容を読み込む"""
+    path = f"/{filename}" if not filename.startswith("/") else filename
+    try:
+        metadata, res = dbx.files_download(path)
+        return res.content.decode("utf-8")
+    except Exception as e:
+        return f"❌ 読み込みエラー: {str(e)}"
