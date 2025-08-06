@@ -1,23 +1,68 @@
-import datetime
+from flask import Flask, request
+from linebot import LineBotApi, WebhookHandler
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.exceptions import InvalidSignatureError
+import dropbox
 import os
-from dropbox import Dropbox, exceptions
 
-# Dropbox 初期化（ET_CODE_DROPBOX_TOKEN はすでに登録済み前提）
-DROPBOX_TOKEN = os.getenv("ET_CODE_DROPBOX_TOKEN")
-dbx = Dropbox(DROPBOX_TOKEN)
+# Flask アプリケーション
+app = Flask(__name__)
 
-def save_log_to_dropbox(log_text: str, prefix: str = "gpt_log") -> str:
+# LINE Messaging API設定
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+
+# Dropbox 認証
+DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN")
+dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
+
+
+# ✅ ログ読み出し関数
+def read_log_from_dropbox(filename: str) -> str:
     """
-    会話ログをDropboxに保存する（ファイル名にタイムスタンプ付き）
+    Dropbox内の指定されたログファイル（/logs/{filename}）を読み出して返します。
     """
-    now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{prefix}_{now}.txt"
-    dropbox_path = f"/logs/{filename}"
-
     try:
-        dbx.files_upload(log_text.encode('utf-8'), dropbox_path, mode=dropbox.files.WriteMode("add"))
-        print(f"✅ ログをDropboxに保存しました: {dropbox_path}")
-        return filename
-    except exceptions.ApiError as e:
-        print(f"❌ Dropboxアップロード失敗: {e}")
-        return ""
+        path = f"/logs/{filename}"
+        metadata, res = dbx.files_download(path)
+        content = res.content.decode("utf-8")
+        print(f"✅ ログ '{filename}' 読み込み成功")
+        return content
+    except dropbox.exceptions.HttpError as e:
+        print(f"❌ Dropboxログ読み出しエラー: {e}")
+        return f"読み込みエラー：{filename}"
+
+
+# ✅ LINE Webhook エンドポイント
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers["X-Line-Signature"]
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        return "Invalid signature", 400
+    return "OK", 200
+
+
+# ✅ LINEメッセージ受信時の処理
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_msg = event.message.text.strip()
+    
+    # ✅ 例：ログ読み取りコマンド
+    if user_msg.startswith("ログ:"):
+        filename = user_msg.replace("ログ:", "").strip()
+        content = read_log_from_dropbox(filename)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=content))
+    else:
+        # 通常返信
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ありがとうございます"))
+
+
+# ✅ Renderで起動するための設定
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Renderでは10000番ポート
+    app.run(host="0.0.0.0", port=port)
