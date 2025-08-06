@@ -1,36 +1,36 @@
 from flask import Flask, request, jsonify
 import os
+import dropbox
+import datetime
 
 app = Flask(__name__)
 
-# 自分のコード保存フォルダ（任意で変更可）
-CODE_DIR = "received_code"
-os.makedirs(CODE_DIR, exist_ok=True)
+# Dropbox アクセストークン（環境変数）
+DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
 
-@app.route("/")
-def index():
-    return "E.T Code is running."
+@app.route("/", methods=["GET"])
+def home():
+    return "E.T Codelabo Server is Running!"
 
-# 八咫烏から受信するルート
 @app.route("/receive-code", methods=["POST"])
 def receive_code():
     try:
-        data = request.json
-        filename = data.get("filename")
-        code = data.get("code")
+        data = request.get_json()
+        user_id = data.get("user_id")
+        message = data.get("message")
+        timestamp = datetime.datetime.now().isoformat()
 
-        if not filename or not code:
-            return jsonify({"error": "filename and code are required"}), 400
+        # Dropbox保存パス
+        file_path = f"/Apps/slot-data-analyzer/{timestamp}_{user_id}.txt"
 
-        filepath = os.path.join(CODE_DIR, filename)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(code)
+        # 内容をDropboxにアップロード
+        dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
+        dbx.files_upload(message.encode(), file_path, mute=True)
 
-        return jsonify({"message": f"{filename} を受信して保存しました"}), 200
+        return jsonify({"status": "success", "path": file_path}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
