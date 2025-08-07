@@ -1,22 +1,26 @@
 from flask import Flask, request
+import os
 import requests
 import dropbox
-import os
-import hashlib
+from openai import OpenAI
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
-import openai
-# main.py のどこか上部
+import hashlib
+
+# GitHub 連携
 from github_utils import commit_text
 
 # --- 環境変数 ---
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
+DROPBOX_APP_KEY       = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_USER_ID = os.getenv("LINE_USER_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PARTNER_UPDATE_URL = os.getenv("PARTNER_UPDATE_URL")
+LINE_USER_ID          = os.getenv("LINE_USER_ID")
+OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
+PARTNER_UPDATE_URL    = os.getenv("PARTNER_UPDATE_URL")
+
+# 要約通知の可否（"1"で通知、デフォルト=OFF）
+NOTIFY_SUMMARY = os.getenv("NOTIFY_SUMMARY", "0") == "1"
 
 # --- 初期化 ---
 app = Flask(__name__)
@@ -26,13 +30,12 @@ dbx = dropbox.Dropbox(
     app_secret=DROPBOX_APP_SECRET
 )
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-openai.api_key = OPENAI_API_KEY
-# ...既存コードは触らない...
+client = OpenAI(api_key=OPENAI_API_KEY)
 
+# --- GitHub heartbeat 手動エンドポイント ---
 @app.route("/push-github", methods=["POST"])
 def push_github():
     try:
-        # 例：直近の状況を簡易ログにしてコミット
         summary = "Auto update: service heartbeat and last-run OK\n"
         msg = commit_text(
             repo_path="ops/last_run.log",
@@ -43,20 +46,21 @@ def push_github():
     except Exception as e:
         return f"❌ GitHub push failed: {e}", 500
 
-# --- グローバル変数 ---
+# --- グローバル ---
 PROCESSED_HASHES = set()
-DROPBOX_FOLDER_PATH = ""  # Dropboxのルートディレクトリ
+DROPBOX_FOLDER_PATH = ""  # ルート監視（空文字がDropbox APIの正）
 
-# --- Dropbox ファイル一覧取得 ---
+# --- Dropbox: ファイル一覧 ---
 def list_files(folder_path=DROPBOX_FOLDER_PATH):
     try:
-        result = dbx.files_list_folder(folder_path)
+        folder = "" if folder_path in ("", "/") else folder_path
+        result = dbx.files_list_folder(folder)
         return result.entries
     except Exception as e:
         print(f"[ファイル一覧取得エラー] {e}")
         return []
 
-# --- Dropbox ファイルダウンロード ---
+# --- Dropbox: ダウンロード ---
 def download_file(path):
     try:
         _, res = dbx.files_download(path)
@@ -65,51 +69,62 @@ def download_file(path):
         print(f"[ファイルDLエラー] {e}")
         return None
 
-# --- ハッシュ生成 ---
-def file_hash(content):
-    return hashlib.sha256(content).hexdigest()
+# --- ハッシュ ---
+def file_hash(content: bytes) -> str:
+    return hashlib.sha256(content or b"").hexdigest()
 
-# --- GPT要約処理 ---
-def summarize_text(text):
-    prompt = f"以下のテキストを要約してください:\n\n{text}"
+# --- GPT要約 ---
+def summarize_text(text: str) -> str:
     try:
-        response = openai.ChatCompletion.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
+            messages=[
+                {"role": "system", "content": "以下のテキストを日本語で簡潔に要約してください。"},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.5,
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"[GPT要約失敗] {e}"
 
-# --- LINE 通知送信 ---
-def send_line(text):
+# --- LINE 送信（必要な時のみ） ---
+def send_line(text: str):
     try:
-        msg = TextSendMessage(text=text)
-        line_bot_api.push_message(LINE_USER_ID, messages=msg)
+        line_bot_api.push_message(LINE_USER_ID, TextSendMessage(text=text))
     except Exception as e:
         print(f"[LINE通知失敗] {e}")
 
 # --- 新規ファイル処理 ---
 def process_new_files():
     files = list_files()
-    for file in files:
-        fname = file.name
-        path = f"{DROPBOX_FOLDER_PATH}/{fname}"
+    for entry in files:
+        fname = entry.name
+        # ルート監視時も必ず "/filename" 形式でダウンロード
+        path = f"/{fname}" if DROPBOX_FOLDER_PATH in ("", "/") \
+               else f"{DROPBOX_FOLDER_PATH.rstrip('/')}/{fname}"
+
         content = download_file(path)
         if not content:
             continue
+
         h = file_hash(content)
         if h in PROCESSED_HASHES:
-            print(f"[スキップ] 重複ファイル → {fname}")
+            print(f"[スキップ] 重複 → {fname}")
             continue
         PROCESSED_HASHES.add(h)
 
+        # テキスト化（バイナリは無視してOK）
         text = content.decode("utf-8", errors="ignore")
         summary = summarize_text(text)
-        send_line(f"【要約】{fname}\n{summary}")
 
-# --- Webhook 受信（Dropbox用） ---
+        if NOTIFY_SUMMARY:
+            send_line(f"【要約】{fname}\n{summary}")
+        else:
+            # 通知OFF時はログだけ
+            print(f"[要約完了/通知OFF] {fname} -> {summary[:80]}...")
+
+# --- Dropbox Webhook ---
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
@@ -119,32 +134,32 @@ def webhook():
             return challenge, 200
         return "No challenge", 400
 
-    if request.method == "POST":
-        print("[Webhook受信] 新ファイルチェック実行")
-        process_new_files()
+    # POST
+    print("[Webhook受信] 新ファイルチェック実行")
+    process_new_files()
 
-        # パートナー側へも通知（必要なら）
-        if PARTNER_UPDATE_URL:
-            try:
-                requests.post(PARTNER_UPDATE_URL, timeout=3)
-                print("[通知] 相手へ update-code 通知済")
-            except Exception as e:
-                print(f"[通知エラー] {e}")
-        return "", 200
+    if PARTNER_UPDATE_URL:
+        try:
+            requests.post(PARTNER_UPDATE_URL, timeout=3)
+            print("[通知] 相手へ update-code 通知済")
+        except Exception as e:
+            print(f"[通知エラー] {e}")
 
-# --- update-code 受信（手動/相互連携） ---
+    return "", 200
+
+# --- 手動/相互連携トリガー ---
 @app.route("/update-code", methods=["POST"])
 def update_code():
     print("[受信] update-code")
     process_new_files()
     return "OK", 200
 
-# --- ステータス確認ページ ---
+# --- ステータス ---
 @app.route("/", methods=["GET"])
 def home():
     files = list_files()
     return "<h2>E.T Code BOT 稼働中</h2><br>" + "<br>".join([f.name for f in files])
 
-# --- 実行エントリーポイント ---
+# --- 実行 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
