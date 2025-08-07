@@ -1,11 +1,10 @@
 import os
-import hashlib
 import dropbox
+import openai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import openai
 
 # --- 認証情報 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
@@ -13,7 +12,7 @@ LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # ← ✅ OpenAIのAPIキー
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # --- 初期化 ---
 app = Flask(__name__)
@@ -35,16 +34,15 @@ dbx = get_dropbox()
 def home():
     return '✅ 自動解析BOT 起動中（八咫烏＆E.T Code）'
 
-# --- ファイル操作 ---
+# --- ファイル操作関数 ---
 def save_log_to_dropbox(filename, content):
     path = f"/{filename}"
     dbx.files_upload(content.encode(), path, mode=dropbox.files.WriteMode.overwrite)
     return f"✅ 保存完了: {filename}"
 
 def read_log_from_dropbox(filename):
-    path = f"/{filename}"
     try:
-        metadata, res = dbx.files_download(path)
+        metadata, res = dbx.files_download(f"/{filename}")
         return res.content.decode()
     except Exception:
         return "❌ 読み込み失敗（ファイルが存在しません）"
@@ -58,33 +56,27 @@ def list_dropbox_files():
         return "❌ 一覧取得失敗"
 
 def delete_dropbox_file(filename):
-    path = f"/{filename}"
     try:
-        dbx.files_delete_v2(path)
+        dbx.files_delete_v2(f"/{filename}")
         return f"🗑️ 削除完了: {filename}"
     except Exception:
         return "❌ 削除失敗（ファイルが存在しない可能性）"
 
-# --- ファイル解析 ---
 def analyze_file_with_gpt(filename):
-    path = f"/{filename}"
     try:
-        _, res = dbx.files_download(path)
+        _, res = dbx.files_download(f"/{filename}")
         content = res.content.decode()
-
         prompt = f"以下のファイル内容を要約・分析し、スロット設定予測や重要ポイントをまとめてください:\n\n{content}"
-
         response = openai.ChatCompletion.create(
             model="gpt-4-1106-preview",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5
         )
-        result = response.choices[0].message.content.strip()
-        return f"📊 {filename} の解析結果:\n{result}"
+        return f"📊 {filename} の解析結果:\n{response.choices[0].message.content.strip()}"
     except Exception as e:
         return f"❌ 解析失敗: {str(e)}"
 
-# --- LINE Webhook ---
+# --- Webhook & メッセージ処理 ---
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers["X-Line-Signature"]
@@ -95,7 +87,6 @@ def callback():
         abort(400)
     return "OK"
 
-# --- メッセージ処理 ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text.strip()
@@ -131,12 +122,12 @@ def handle_message(event):
     if user_msg.startswith("解析:"):
         filename = user_msg.replace("解析:", "").strip()
         result = analyze_file_with_gpt(filename)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result[:3000]))  # LINE制限
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result[:3000]))
         return
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ コマンドが不明です。"))
 
-# --- コードアップデートエンドポイント ---
+# --- コード更新エンドポイント ---
 @app.route("/update-code", methods=["POST"])
 def update_code():
     try:
@@ -144,10 +135,10 @@ def update_code():
         script_path = os.path.realpath(__file__)
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(new_code)
-        return "✅ コード更新完了（再起動で反映されます）"
+        return "✅ コード更新完了（再起動で反映）"
     except Exception as e:
-        return f"❌ コード更新失敗: {str(e)}", 500
+        return f"❌ 更新失敗: {str(e)}", 500
 
-# --- アプリ起動（Renderでは無効） ---
+# --- ローカル起動用 ---
 if __name__ == "__main__":
     app.run()
