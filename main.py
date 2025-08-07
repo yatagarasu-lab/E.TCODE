@@ -9,22 +9,6 @@ import openai
 # main.py のどこか上部
 from github_utils import commit_text
 
-# ...既存コードは触らない...
-
-@app.route("/push-github", methods=["POST"])
-def push_github():
-    try:
-        # 例：直近の状況を簡易ログにしてコミット
-        summary = "Auto update: service heartbeat and last-run OK\n"
-        msg = commit_text(
-            repo_path="ops/last_run.log",
-            text=summary,
-            commit_message="chore: auto heartbeat push"
-        )
-        return msg, 200
-    except Exception as e:
-        return f"❌ GitHub push failed: {e}", 500
-
 # --- 環境変数 ---
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
@@ -43,6 +27,21 @@ dbx = dropbox.Dropbox(
 )
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 openai.api_key = OPENAI_API_KEY
+# ...既存コードは触らない...
+
+@app.route("/push-github", methods=["POST"])
+def push_github():
+    try:
+        # 例：直近の状況を簡易ログにしてコミット
+        summary = "Auto update: service heartbeat and last-run OK\n"
+        msg = commit_text(
+            repo_path="ops/last_run.log",
+            text=summary,
+            commit_message="chore: auto heartbeat push"
+        )
+        return msg, 200
+    except Exception as e:
+        return f"❌ GitHub push failed: {e}", 500
 
 # --- グローバル変数 ---
 PROCESSED_HASHES = set()
