@@ -18,11 +18,6 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ✅ ルート確認用（Renderの / にアクセスすると表示される）
-@app.route('/')
-def home():
-    return '✅ 自動解析BOT 起動中（八咫烏＆E.T Code）'
-
 # Dropbox セッション取得
 def get_dropbox():
     return dropbox.Dropbox(
@@ -32,6 +27,11 @@ def get_dropbox():
     )
 
 dbx = get_dropbox()
+
+# ✅ ルート確認用（Renderの / にアクセスすると表示される）
+@app.route('/')
+def home():
+    return '✅ 自動解析BOT 起動中（八咫烏＆E.T Code）'
 
 # ✅ 保存処理
 def save_log_to_dropbox(filename, content):
@@ -118,6 +118,21 @@ def handle_message(event):
     # ✅ 不明なコマンド
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ コマンドが不明です。"))
 
-# ✅ アプリ起動（Renderでは gunicorn が使われるため無効化される）
+# ✅ 外部コードアップデート用エンドポイント
+@app.route("/update-code", methods=["POST"])
+def update_code():
+    try:
+        new_code = request.data.decode("utf-8")
+
+        # 上書き対象のファイル（このmain.py自身）
+        script_path = os.path.realpath(__file__)
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(new_code)
+
+        return "✅ コード更新完了（再起動で反映されます）"
+    except Exception as e:
+        return f"❌ コード更新失敗: {str(e)}", 500
+
+# ✅ アプリ起動（Renderでは gunicorn を使用するため無効）
 if __name__ == "__main__":
     app.run()
