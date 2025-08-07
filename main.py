@@ -28,7 +28,7 @@ openai.api_key = OPENAI_API_KEY
 
 # --- グローバル変数 ---
 PROCESSED_HASHES = set()
-DROPBOX_FOLDER_PATH = "/"  # Dropboxのルートディレクトリ
+DROPBOX_FOLDER_PATH = ""  # Dropboxのルートディレクトリ
 
 # --- Dropbox ファイル一覧取得 ---
 def list_files(folder_path=DROPBOX_FOLDER_PATH):
