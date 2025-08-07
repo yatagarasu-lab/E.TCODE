@@ -14,9 +14,8 @@ LINE_USER_ID = os.getenv("LINE_USER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PARTNER_UPDATE_URL = os.getenv("PARTNER_UPDATE_URL")
 
-app = Flask(__name__)
-
 # --- 初期化 ---
+app = Flask(__name__)
 dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 openai.api_key = OPENAI_API_KEY
@@ -63,14 +62,17 @@ def auto_analyze():
             print(f"重複検出 → {path} はスキップ")
             continue
         seen_hashes[h] = path
-        summary = summarize_text(content.decode("utf‑8", errors="ignore"))
+        summary = summarize_text(content.decode("utf-8", errors="ignore"))
         send_line_message(f"[解析結果]\n{file.name}:\n{summary}")
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
         challenge = request.args.get("challenge")
-        return (challenge or ""), 200
+        if challenge:
+            print("[Webhook認証] challengeを返します")
+            return challenge, 200
+        return "No challenge provided", 400
 
     if request.method == "POST":
         print("[Webhook通知] DropboxからのPOST受信")
