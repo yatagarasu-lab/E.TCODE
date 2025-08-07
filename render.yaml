@@ -1,11 +1,18 @@
 services:
   - type: web
-    name: et-code
-    runtime: python
+    name: yatagarasu-et-bot
+    env: python
     buildCommand: ""
     startCommand: gunicorn main:app
+    plan: free
     envVars:
-      - key: FLASK_ENV
-        value: production
-      - key: ET_CODE_ENDPOINT
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
         sync: false
