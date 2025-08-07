@@ -1,20 +1,16 @@
-# update_code.py（受信したコードをファイルに保存）
+import requests
 
-from flask import request, jsonify
-import os
+# 📍 Render の実行URL（例: https://your-app.onrender.com）
+RENDER_URL = "https://your-app.onrender.com"
+UPDATE_ENDPOINT = "/update-code"
 
-def handle_code_update():
-    data = request.get_json()
+# 🔄 送りたいコード（main.py全文を文字列で読み込む）
+with open("main.py", "r", encoding="utf-8") as f:
+    code = f.read()
 
-    filename = data.get("filename")
-    code = data.get("code")
+res = requests.post(RENDER_URL + UPDATE_ENDPOINT, data=code)
 
-    if not filename or not code:
-        return jsonify({"status": "error", "message": "filenameとcodeが必要です"}), 400
-
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(code)
-        return jsonify({"status": "success", "message": f"{filename} にコードを保存しました"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+if res.ok:
+    print("✅ アップデート成功:", res.text)
+else:
+    print("❌ アップデート失敗:", res.status_code, res.text)
