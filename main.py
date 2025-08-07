@@ -8,7 +8,9 @@ from linebot.models import TextSendMessage
 import openai
 
 # --- 環境変数 ---
-DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -16,10 +18,15 @@ PARTNER_UPDATE_URL = os.getenv("PARTNER_UPDATE_URL")
 
 # --- 初期化 ---
 app = Flask(__name__)
-dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
+dbx = dropbox.Dropbox(
+    oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
+    app_key=DROPBOX_APP_KEY,
+    app_secret=DROPBOX_APP_SECRET
+)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 openai.api_key = OPENAI_API_KEY
 
+# --- Dropboxファイル操作 ---
 def list_files(folder_path="/Apps/slot-data-analyzer"):
     result = dbx.files_list_folder(folder_path)
     return result.entries
@@ -31,6 +38,7 @@ def download_file(path):
 def file_hash(content):
     return hashlib.sha256(content).hexdigest()
 
+# --- GPT要約処理 ---
 def summarize_text(text):
     try:
         response = openai.ChatCompletion.create(
@@ -44,6 +52,7 @@ def summarize_text(text):
     except Exception as e:
         return f"[要約エラー] {e}"
 
+# --- LINE通知処理 ---
 def send_line_message(text):
     try:
         msg = TextSendMessage(text=text)
@@ -51,6 +60,7 @@ def send_line_message(text):
     except Exception as e:
         print("[LINE通知エラー]", e)
 
+# --- 自動解析本体 ---
 def auto_analyze():
     seen_hashes = {}
     files = list_files()
@@ -65,6 +75,7 @@ def auto_analyze():
         summary = summarize_text(content.decode("utf-8", errors="ignore"))
         send_line_message(f"[解析結果]\n{file.name}:\n{summary}")
 
+# --- Webhookエンドポイント ---
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
@@ -87,12 +98,14 @@ def webhook():
 
     return "Method Not Allowed", 405
 
+# --- 相互通知用エンドポイント ---
 @app.route("/update-code", methods=["POST"])
 def update_code():
     print("[相互アップデート通知] 受信")
     auto_analyze()
     return "Update processed", 200
 
+# --- ステータス確認用 ---
 @app.route("/", methods=["GET"])
 def home():
     return "八咫烏 BOT 正常稼働中", 200
