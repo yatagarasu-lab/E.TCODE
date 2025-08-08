@@ -6,20 +6,21 @@ from openai import OpenAI
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
 import hashlib
+from threading import Thread
 
-# GitHub 連携
+# GitHub 連携（使わないならそのままでOK）
 from github_utils import commit_text
 
 # --- 環境変数 ---
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_APP_KEY       = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET")
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_USER_ID          = os.getenv("LINE_USER_ID")
-OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
-PARTNER_UPDATE_URL    = os.getenv("PARTNER_UPDATE_URL")
+DROPBOX_REFRESH_TOKEN      = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY            = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET         = os.getenv("DROPBOX_APP_SECRET")
+LINE_CHANNEL_ACCESS_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID               = os.getenv("LINE_USER_ID")
+OPENAI_API_KEY             = os.getenv("OPENAI_API_KEY")
+PARTNER_UPDATE_URL         = os.getenv("PARTNER_UPDATE_URL")
 
-# 要約通知の可否（"1"で通知、デフォルト=OFF）
+# 要約通知の可否（"1" で通知、既定 OFF）
 NOTIFY_SUMMARY = os.getenv("NOTIFY_SUMMARY", "0") == "1"
 
 # --- 初期化 ---
@@ -31,6 +32,11 @@ dbx = dropbox.Dropbox(
 )
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# --- Health check（Render 用） ---
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return "ok", 200
 
 # --- GitHub heartbeat 手動エンドポイント ---
 @app.route("/push-github", methods=["POST"])
@@ -48,17 +54,21 @@ def push_github():
 
 # --- グローバル ---
 PROCESSED_HASHES = set()
-DROPBOX_FOLDER_PATH = ""  # ルート監視（空文字がDropbox APIの正）
+DROPBOX_FOLDER_PATH = ""  # ルート監視（空文字が Dropbox API の正）
 
-# --- Dropbox: ファイル一覧 ---
+# --- Dropbox: ファイル一覧（ページング対応） ---
 def list_files(folder_path=DROPBOX_FOLDER_PATH):
+    entries = []
     try:
         folder = "" if folder_path in ("", "/") else folder_path
-        result = dbx.files_list_folder(folder)
-        return result.entries
+        res = dbx.files_list_folder(folder)
+        entries.extend(res.entries)
+        while res.has_more:
+            res = dbx.files_list_folder_continue(res.cursor)
+            entries.extend(res.entries)
     except Exception as e:
         print(f"[ファイル一覧取得エラー] {e}")
-        return []
+    return entries
 
 # --- Dropbox: ダウンロード ---
 def download_file(path):
@@ -77,7 +87,7 @@ def file_hash(content: bytes) -> str:
 def summarize_text(text: str) -> str:
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o",  # 料金抑えるなら "gpt-4o-mini"
             messages=[
                 {"role": "system", "content": "以下のテキストを日本語で簡潔に要約してください。"},
                 {"role": "user", "content": text}
@@ -100,7 +110,7 @@ def process_new_files():
     files = list_files()
     for entry in files:
         fname = entry.name
-        # ルート監視時も必ず "/filename" 形式でダウンロード
+        # ルート監視時も必ず "/filename"
         path = f"/{fname}" if DROPBOX_FOLDER_PATH in ("", "/") \
                else f"{DROPBOX_FOLDER_PATH.rstrip('/')}/{fname}"
 
@@ -114,15 +124,27 @@ def process_new_files():
             continue
         PROCESSED_HASHES.add(h)
 
-        # テキスト化（バイナリは無視してOK）
+        # バイナリは無視してOK（必要になったら拡張）
         text = content.decode("utf-8", errors="ignore")
         summary = summarize_text(text)
 
         if NOTIFY_SUMMARY:
             send_line(f"【要約】{fname}\n{summary}")
         else:
-            # 通知OFF時はログだけ
             print(f"[要約完了/通知OFF] {fname} -> {summary[:80]}...")
+
+# --- 非同期実行（webhook タイムアウト回避） ---
+def _handle_async():
+    try:
+        process_new_files()
+        if PARTNER_UPDATE_URL:
+            try:
+                requests.post(PARTNER_UPDATE_URL, timeout=3)
+                print("[通知] 相手へ update-code 通知済")
+            except Exception as e:
+                print(f"[通知エラー] {e}")
+    except Exception as e:
+        print(f"[非同期処理エラー] {e}")
 
 # --- Dropbox Webhook ---
 @app.route("/webhook", methods=["GET", "POST"])
@@ -134,24 +156,16 @@ def webhook():
             return challenge, 200
         return "No challenge", 400
 
-    # POST
-    print("[Webhook受信] 新ファイルチェック実行")
-    process_new_files()
-
-    if PARTNER_UPDATE_URL:
-        try:
-            requests.post(PARTNER_UPDATE_URL, timeout=3)
-            print("[通知] 相手へ update-code 通知済")
-        except Exception as e:
-            print(f"[通知エラー] {e}")
-
+    # POST: すぐ 200 を返して裏で処理
+    print("[Webhook受信] 非同期処理開始")
+    Thread(target=_handle_async, daemon=True).start()
     return "", 200
 
 # --- 手動/相互連携トリガー ---
 @app.route("/update-code", methods=["POST"])
 def update_code():
-    print("[受信] update-code")
-    process_new_files()
+    print("[受信] update-code（非同期処理開始）")
+    Thread(target=_handle_async, daemon=True).start()
     return "OK", 200
 
 # --- ステータス ---
@@ -162,4 +176,6 @@ def home():
 
 # --- 実行 ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    # Render でもローカルでも動くように PORT を見る
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
