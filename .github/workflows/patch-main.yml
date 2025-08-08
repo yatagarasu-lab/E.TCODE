@@ -1,76 +1,76 @@
-name: Auto Patch & Deploy
+name: Patch main & deploy
 
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "override RUN_MODE (normal|fast)"
+        required: false
+        default: ""
   schedule:
-    # 通常運転（15分おき）
-    - cron: "*/15 * * * *"
-    # ブースト運転（5分おき）
+    # fast 用: 5分おき（RUN_MODE=fast のときだけ実行）
     - cron: "*/5 * * * *"
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
-
-env:
-  # リポジトリ変数から運転モードを読み込み（fast / normal）
-  RUN_MODE: ${{ vars.RUN_MODE }}
-  # どのブランチを使うか
-  TARGET_BRANCH: main
+    # normal 用: 30分おき（RUN_MODE=normal のときだけ実行）
+    - cron: "*/30 * * * *"
 
 jobs:
-  patch-and-deploy:
+  patch:
     runs-on: ubuntu-latest
-    # fastモード時: 両方トリガーで動く
-    # normalモード時: 15分おきのトリガーだけ動かす（5分おきは即終了）
     steps:
-      - name: Early exit on schedule/mode mismatch
-        run: |
-          # SCHEDULE_KIND は 5分 or 15分 を判定するための環境値をActionsが持たないので、
-          # 直近のトリガー間隔を疑似判別：5分境界なら 5分、そうでなければ15分扱いにする簡易ロジック
-          MIN=$(date +%M)
-          if [ $((10#$MIN % 5)) -eq 0 ]; then
-            TRIGGER_KIND=fast    # 5分境界
-          else
-            TRIGGER_KIND=normal  # それ以外
-          fi
-          echo "RUN_MODE=${RUN_MODE:-normal}"
-          echo "TRIGGER_KIND=$TRIGGER_KIND"
-
-          if [ "${RUN_MODE:-normal}" = "normal" ] && [ "$TRIGGER_KIND" = "fast" ]; then
-            echo "Normal modeなので5分トリガーは早期終了"; exit 0
-          fi
-
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TARGET_BRANCH }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Apply small safe patches (if any)
+      - name: Read RUN_MODE
+        id: readmode
         run: |
-          python - << 'PY'
-          # ここで安全な軽微パッチを自動適用（例：ops/desired_changes.yaml を読む等）
-          # 今はダミー：将来このロジックを強化していきます
-          print("No-op patch step (placeholder)")
-          PY
+          echo "run_mode=${{ secrets.RUN_MODE }}" >> $GITHUB_OUTPUT
 
-      - name: Commit if changed
+      - name: Determine execution
+        id: should_run
         run: |
-          git config user.name "auto-bot"
-          git config user.email "auto-bot@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
+          MODE_INPUT="${{ github.event.inputs.mode }}"
+          if [ -n "$MODE_INPUT" ]; then
+            CURRENT_MODE="$MODE_INPUT"
           else
-            git commit -m "chore: autopatch ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
-            git push origin ${{ env.TARGET_BRANCH }}
+            CURRENT_MODE="${{ steps.readmode.outputs.run_mode }}"
+          fi
+          echo "Current mode: $CURRENT_MODE"
+
+          if [ "$CURRENT_MODE" != "fast" ] && [ "$CURRENT_MODE" != "normal" ]; then
+            echo "Invalid or unset RUN_MODE. Skipping..."
+            echo "run=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-      - name: Trigger Render deploy (optional)
-        if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
+          # cron実行時のモードチェック
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "$CURRENT_MODE" = "fast" ] && [ "$(date +\%M)" -a "$(expr $(date +\%M) % 5)" != "0" ]; then
+              echo "Skipping: Not 5-min mark"
+              echo "run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            if [ "$CURRENT_MODE" = "normal" ] && [ "$(date +\%M)" -a "$(expr $(date +\%M) % 30)" != "0" ]; then
+              echo "Skipping: Not 30-min mark"
+              echo "run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "run=true" >> $GITHUB_OUTPUT
+
+      - name: Apply patch
+        if: steps.should_run.outputs.run == 'true'
         run: |
-          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" || true
+          echo "Applying automated changes..."
+          # ここに main.py などを自動更新する処理を記述
+          # 例:
+          echo "# Auto-patched at $(date)" >> auto_patch_log.txt
+
+      - name: Commit & push changes
+        if: steps.should_run.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Auto patch at $(date)"
+          git push
