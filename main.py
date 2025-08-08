@@ -198,3 +198,4 @@ if __name__ == "__main__":
     commit_last_run(note="service-start")
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+    print("Auto-deploy test success")
