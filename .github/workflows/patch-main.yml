@@ -1,76 +1,34 @@
-name: Patch main & deploy
+name: Deploy on main changes
 
 on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "override RUN_MODE (normal|fast)"
-        required: false
-        default: ""
-  schedule:
-    # fast 用: 5分おき（RUN_MODE=fast のときだけ実行）
-    - cron: "*/5 * * * *"
-    # normal 用: 30分おき（RUN_MODE=normal のときだけ実行）
-    - cron: "*/30 * * * *"
+  push:
+    branches: [ main ]
+    paths:
+      - "main.py"
+      - "requirements.txt"
+      - "ops/**"
+      - "tools/**"
+      - ".github/workflows/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
-  patch:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read RUN_MODE
-        id: readmode
+      - name: Trigger Render deploy
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          YATAGARASU_DEPLOY_HOOK: ${{ secrets.YATAGARASU_DEPLOY_HOOK }}
+          E_T_CODE_DEPLOY_HOOK: ${{ secrets.E_T_CODE_DEPLOY_HOOK }}
         run: |
-          echo "run_mode=${{ secrets.RUN_MODE }}" >> $GITHUB_OUTPUT
-
-      - name: Determine execution
-        id: should_run
-        run: |
-          MODE_INPUT="${{ github.event.inputs.mode }}"
-          if [ -n "$MODE_INPUT" ]; then
-            CURRENT_MODE="$MODE_INPUT"
-          else
-            CURRENT_MODE="${{ steps.readmode.outputs.run_mode }}"
-          fi
-          echo "Current mode: $CURRENT_MODE"
-
-          if [ "$CURRENT_MODE" != "fast" ] && [ "$CURRENT_MODE" != "normal" ]; then
-            echo "Invalid or unset RUN_MODE. Skipping..."
-            echo "run=false" >> $GITHUB_OUTPUT
+          set -e
+          URL="${RENDER_DEPLOY_HOOK:-${YATAGARASU_DEPLOY_HOOK:-${E_T_CODE_DEPLOY_HOOK}}}"
+          if [ -z "$URL" ]; then
+            echo "No deploy hook secret set. Skip."
             exit 0
           fi
-
-          # cron実行時のモードチェック
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            if [ "$CURRENT_MODE" = "fast" ] && [ "$(date +\%M)" -a "$(expr $(date +\%M) % 5)" != "0" ]; then
-              echo "Skipping: Not 5-min mark"
-              echo "run=false" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            if [ "$CURRENT_MODE" = "normal" ] && [ "$(date +\%M)" -a "$(expr $(date +\%M) % 30)" != "0" ]; then
-              echo "Skipping: Not 30-min mark"
-              echo "run=false" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-
-          echo "run=true" >> $GITHUB_OUTPUT
-
-      - name: Apply patch
-        if: steps.should_run.outputs.run == 'true'
-        run: |
-          echo "Applying automated changes..."
-          # ここに main.py などを自動更新する処理を記述
-          # 例:
-          echo "# Auto-patched at $(date)" >> auto_patch_log.txt
-
-      - name: Commit & push changes
-        if: steps.should_run.outputs.run == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "Auto patch at $(date)"
-          git push
+          curl -fsSL -X POST "$URL"
+          echo "Deploy triggered."
