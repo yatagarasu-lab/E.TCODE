@@ -6,3 +6,4 @@ gunicorn==21.2.0
 httpx==0.27.2
 httpcore==1.0.4
 setuptools
+tenacity==8.2.3
