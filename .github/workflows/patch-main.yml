@@ -1,34 +1,59 @@
-name: Deploy on main changes
+name: Auto patch & deploy
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - "main.py"
-      - "requirements.txt"
-      - "ops/**"
-      - "tools/**"
-      - ".github/workflows/**"
+  schedule:
+    # 2時間おきに自動強化（必要なら後でここだけ変えればOK）
+    - cron: "0 */2 * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write   # ← これが大事（自動コミット用）
 
 jobs:
-  deploy:
+  autopatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Render deploy
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run auto patch
         env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
-          YATAGARASU_DEPLOY_HOOK: ${{ secrets.YATAGARASU_DEPLOY_HOOK }}
-          E_T_CODE_DEPLOY_HOOK: ${{ secrets.E_T_CODE_DEPLOY_HOOK }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # なくてもOK（無ければハートビートのみ）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+          python tools/auto_patch.py
+
+      - name: Commit & push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore(auto): autopatch & heartbeat"
+            git push
+            echo "changes_pushed=true" >> $GITHUB_OUTPUT
+          else
+            echo "No changes."
+          fi
+
+      - name: Trigger Render deploy (optional)
+        if: always()
+        env:
+          RENDER_DEPLOY_HOOK:        ${{ secrets.RENDER_DEPLOY_HOOK }}
+          YATAGARASU_DEPLOY_HOOK:    ${{ secrets.YATAGARASU_DEPLOY_HOOK }}
+          E_T_CODE_DEPLOY_HOOK:      ${{ secrets.E_T_CODE_DEPLOY_HOOK }}
         run: |
           set -e
-          URL="${RENDER_DEPLOY_HOOK:-${YATAGARASU_DEPLOY_HOOK:-${E_T_CODE_DEPLOY_HOOK}}}"
-          if [ -z "$URL" ]; then
-            echo "No deploy hook secret set. Skip."
-            exit 0
+          URL="${RENDER_DEPLOY_HOOK:-${YATAGARASU_DEPLOY_HOOK:-$E_T_CODE_DEPLOY_HOOK}}"
+          if [ -n "$URL" ]; then
+            echo "POST $URL"
+            curl -fsSL -X POST "$URL" || true
+          else
+            echo "No deploy hook configured. Skipping."
           fi
-          curl -fsSL -X POST "$URL"
-          echo "Deploy triggered."
