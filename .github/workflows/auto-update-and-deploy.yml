@@ -1,54 +1,76 @@
-name: Auto update and Deploy
+name: Auto edit -> Commit -> Deploy
 
 on:
+  # main に関わる変更 or ワークフロー自体の変更で走る
   push:
     branches: [ main ]
     paths:
+      - "main.py"
+      - "requirements.txt"
       - "ops/**"
+      - "tools/**"
       - ".github/workflows/**"
-  workflow_dispatch: {}
+  # 1時間ごとに Render のデプロイを起動（必要なら頻度を変えてOK）
   schedule:
-    - cron: "0 */3 * * *"  # 3時間ごと（お好みで）
+    - cron: "0 * * * *"
+  # 手動実行
+  workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  apply-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps for editor
+      - name: Pick Deploy Hook (Render)
+        id: pick
         run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml jinja2
+          # 使えるものから順に採用（どれか1つでOK）
+          url="${{ secrets.RENDER_DEPLOY_HOOK }}"
+          [ -z "$url" ] && url="${{ secrets.YATAGARASU_DEPLOY_HOOK }}"
+          [ -z "$url" ] && url="${{ secrets.E_T_CODE_DEPLOY_HOOK }}"
+          if [ -z "$url" ]; then
+            echo "ERROR: No deploy hook secret set (RENDER_DEPLOY_HOOK / YATAGARASU_DEPLOY_HOOK / E_T_CODE_DEPLOY_HOOK)."
+            exit 1
+          fi
+          echo "url=$url" >> $GITHUB_OUTPUT
 
-      - name: Apply desired changes
-        run: |
-          python ops/apply_changes.py
-
-      - name: Commit if changed
+      - name: Trigger Render Deploy
+        env:
+          URL: ${{ steps.pick.outputs.url }}
         run: |
           set -e
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain)" ]; then
-            git add -A
-            git commit -m "chore: auto-apply desired changes"
-            git push
-          else
-            echo "No changes to commit."
+          echo "POST $URL"
+          # Render の Deploy Hook は POST でOK
+          http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "$URL")
+          echo "HTTP $http_code"
+          if [ "$http_code" != "200" ] && [ "$http_code" != "202" ]; then
+            echo "Deploy hook returned $http_code"
+            exit 1
           fi
+          echo "Deploy triggered."
 
-      - name: Trigger Render deploy (optional)
-        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
+      # （任意）少し待ってヘルスチェックする。SERVICE_URL があれば有効化。
+      - name: Optional health check
+        if: ${{ vars.SERVICE_URL != '' }}
+        env:
+          SERVICE_URL: ${{ vars.SERVICE_URL }}
         run: |
-          curl -fsSL -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" \
-            && echo "Render deploy triggered."
+          echo "Health check to: $SERVICE_URL/healthz"
+          for i in $(seq 1 12); do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "$SERVICE_URL/healthz" || true)
+            echo "Attempt $i -> $code"
+            if [ "$code" = "200" ]; then
+              echo "Service healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check did not pass in time (2min)."
+          # ここで失敗させず警告だけにする
+          exit 0
