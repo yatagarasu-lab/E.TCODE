@@ -7,8 +7,9 @@ from linebot import LineBotApi
 from linebot.models import TextSendMessage
 import hashlib
 from threading import Thread
+from datetime import datetime, timezone
 
-# GitHub 連携（使わないならそのままでOK）
+# GitHub 連携（commit_text が無ければ try/except 内で握りつぶす）
 from github_utils import commit_text
 
 # --- 環境変数 ---
@@ -42,19 +43,33 @@ def healthz():
 @app.route("/push-github", methods=["POST"])
 def push_github():
     try:
-        summary = "Auto update: service heartbeat and last-run OK\n"
-        msg = commit_text(
-            repo_path="ops/last_run.log",
-            text=summary,
-            commit_message="chore: auto heartbeat push"
-        )
-        return msg, 200
+        return commit_last_run(note="manual-ping"), 200
     except Exception as e:
         return f"❌ GitHub push failed: {e}", 500
 
 # --- グローバル ---
 PROCESSED_HASHES = set()
 DROPBOX_FOLDER_PATH = ""  # ルート監視（空文字が Dropbox API の正）
+
+# --- GitHub: ops/last_run.log を作成/更新 ---
+def commit_last_run(note: str = "heartbeat") -> str:
+    """
+    ops/last_run.log に UTC タイムスタンプとメモを書き込み（追記ではなく置換）。
+    commit_text が未設定/失敗でも例外を外に投げないようにする。
+    """
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+        body = f"[{ts}] {note}\n"
+        msg = commit_text(
+            repo_path="ops/last_run.log",
+            text=body,
+            commit_message=f"chore: {note}"
+        )
+        print(f"[GitHub] last_run.log updated: {msg}")
+        return msg
+    except Exception as e:
+        print(f"[GitHub更新スキップ] {e}")
+        return f"skip: {e}"
 
 # --- Dropbox: ファイル一覧（ページング対応） ---
 def list_files(folder_path=DROPBOX_FOLDER_PATH):
@@ -124,7 +139,7 @@ def process_new_files():
             continue
         PROCESSED_HASHES.add(h)
 
-        # バイナリは無視してOK（必要になったら拡張）
+        # バイナリは無視（必要になったら拡張）
         text = content.decode("utf-8", errors="ignore")
         summary = summarize_text(text)
 
@@ -145,6 +160,9 @@ def _handle_async():
                 print(f"[通知エラー] {e}")
     except Exception as e:
         print(f"[非同期処理エラー] {e}")
+    finally:
+        # 処理の最後に heartbeat を GitHub へ
+        commit_last_run(note="webhook-processed")
 
 # --- Dropbox Webhook ---
 @app.route("/webhook", methods=["GET", "POST"])
@@ -176,6 +194,7 @@ def home():
 
 # --- 実行 ---
 if __name__ == "__main__":
-    # Render でもローカルでも動くように PORT を見る
+    # 起動時にも heartbeat を1回実施（存在しなければ自動で作られる）
+    commit_last_run(note="service-start")
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
