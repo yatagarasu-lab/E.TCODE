@@ -1,133 +1,139 @@
-from flask import Flask, request
-import os
-import requests
+from flask import Flask, request, Response
+import os, requests, hashlib, logging, json
 import dropbox
+from threading import Thread
+from datetime import datetime, timezone
+from tzlocal import get_localzone
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from apscheduler.schedulers.background import BackgroundScheduler
+from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from openai import OpenAI
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
-import hashlib
-from threading import Thread
-from datetime import datetime, timezone
 
-# GitHub 連携（commit_text が無ければ try/except 内で握りつぶす）
-from github_utils import commit_text
+# ============ 環境変数 ============
+SERVICE_NAME = os.getenv("SERVICE_NAME", "SERVICE")
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY       = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET")
+OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
+LINE_TOKEN            = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID          = os.getenv("LINE_USER_ID")
+PARTNER_UPDATE_URL    = os.getenv("PARTNER_UPDATE_URL")
+NOTIFY_SUMMARY        = os.getenv("NOTIFY_SUMMARY", "0") == "1"
+NOTIFY_ERRORS         = os.getenv("NOTIFY_ERRORS", "1") == "1"
+SCAN_INTERVAL_MIN     = int(os.getenv("SCAN_INTERVAL_MIN", "10"))
+LOG_LEVEL             = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# --- 環境変数 ---
-DROPBOX_REFRESH_TOKEN      = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_APP_KEY            = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET         = os.getenv("DROPBOX_APP_SECRET")
-LINE_CHANNEL_ACCESS_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_USER_ID               = os.getenv("LINE_USER_ID")
-OPENAI_API_KEY             = os.getenv("OPENAI_API_KEY")
-PARTNER_UPDATE_URL         = os.getenv("PARTNER_UPDATE_URL")
+# ============ ログ ============
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger(SERVICE_NAME)
 
-# 要約通知の可否（"1" で通知、既定 OFF）
-NOTIFY_SUMMARY = os.getenv("NOTIFY_SUMMARY", "0") == "1"
-
-# --- 初期化 ---
+# ============ 初期化 ============
 app = Flask(__name__)
+
 dbx = dropbox.Dropbox(
     oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
     app_key=DROPBOX_APP_KEY,
     app_secret=DROPBOX_APP_SECRET
 )
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- Health check（Render 用） ---
-@app.route("/healthz", methods=["GET"])
-def healthz():
-    return "ok", 200
+oai = OpenAI(api_key=OPENAI_API_KEY)
+line = LineBotApi(LINE_TOKEN)
 
-# --- GitHub heartbeat 手動エンドポイント ---
-@app.route("/push-github", methods=["POST"])
-def push_github():
-    try:
-        return commit_last_run(note="manual-ping"), 200
-    except Exception as e:
-        return f"❌ GitHub push failed: {e}", 500
-
-# --- グローバル ---
+DROPBOX_FOLDER_PATH = ""  # ルート監視
 PROCESSED_HASHES = set()
-DROPBOX_FOLDER_PATH = ""  # ルート監視（空文字が Dropbox API の正）
+TZ = get_localzone()
 
-# --- GitHub: ops/last_run.log を作成/更新 ---
-def commit_last_run(note: str = "heartbeat") -> str:
-    """
-    ops/last_run.log に UTC タイムスタンプとメモを書き込み（追記ではなく置換）。
-    commit_text が未設定/失敗でも例外を外に投げないようにする。
-    """
+# ============ メトリクス ============
+FILES_SCANNED   = Counter("files_scanned_total", "Scanned files", ["service"])
+FILES_NEW       = Counter("files_new_total", "New files processed", ["service"])
+ERRORS_TOTAL    = Counter("errors_total", "Errors", ["service", "kind"])
+LAST_SCAN_EPOCH = Gauge("last_scan_epoch_seconds", "Last scan timestamp", ["service"])
+
+# ============ 通知 ============
+def notify_line(text: str):
     try:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
-        body = f"[{ts}] {note}\n"
-        msg = commit_text(
-            repo_path="ops/last_run.log",
-            text=body,
-            commit_message=f"chore: {note}"
-        )
-        print(f"[GitHub] last_run.log updated: {msg}")
-        return msg
+        line.push_message(LINE_USER_ID, TextSendMessage(text=text))
     except Exception as e:
-        print(f"[GitHub更新スキップ] {e}")
-        return f"skip: {e}"
+        log.warning("LINE通知失敗: %s", e)
 
-# --- Dropbox: ファイル一覧（ページング対応） ---
+def notify_error(kind: str, err: Exception):
+    ERRORS_TOTAL.labels(service=SERVICE_NAME, kind=kind).inc()
+    log.error("[%s] %s", kind, err)
+    if NOTIFY_ERRORS:
+        try:
+            notify_line(f"【{SERVICE_NAME} エラー】{kind}\n{err}")
+        except Exception:
+            pass
+
+# ============ Dropbox / OpenAI リトライ ============
+retry_policy = dict(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+    retry=retry_if_exception_type(Exception)
+)
+
+@retry(**retry_policy)
+def list_files_page(folder: str, cursor: str = None):
+    if cursor:
+        return dbx.files_list_folder_continue(cursor)
+    return dbx.files_list_folder(folder)
+
 def list_files(folder_path=DROPBOX_FOLDER_PATH):
     entries = []
     try:
         folder = "" if folder_path in ("", "/") else folder_path
-        res = dbx.files_list_folder(folder)
+        res = list_files_page(folder)
         entries.extend(res.entries)
         while res.has_more:
-            res = dbx.files_list_folder_continue(res.cursor)
+            res = list_files_page(folder, res.cursor)
             entries.extend(res.entries)
     except Exception as e:
-        print(f"[ファイル一覧取得エラー] {e}")
+        notify_error("list_files", e)
     return entries
 
-# --- Dropbox: ダウンロード ---
+@retry(**retry_policy)
 def download_file(path):
     try:
         _, res = dbx.files_download(path)
         return res.content
     except Exception as e:
-        print(f"[ファイルDLエラー] {e}")
+        notify_error("download_file", e)
         return None
 
-# --- ハッシュ ---
 def file_hash(content: bytes) -> str:
     return hashlib.sha256(content or b"").hexdigest()
 
-# --- GPT要約 ---
+@retry(**retry_policy)
 def summarize_text(text: str) -> str:
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o",  # 料金抑えるなら "gpt-4o-mini"
+        resp = oai.chat.completions.create(
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "以下のテキストを日本語で簡潔に要約してください。"},
                 {"role": "user", "content": text}
             ],
-            temperature=0.5,
+            temperature=0.2
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"[GPT要約失敗] {e}"
+        notify_error("summarize_text", e)
+        return f"[要約失敗] {e}"
 
-# --- LINE 送信（必要な時のみ） ---
-def send_line(text: str):
-    try:
-        line_bot_api.push_message(LINE_USER_ID, TextSendMessage(text=text))
-    except Exception as e:
-        print(f"[LINE通知失敗] {e}")
-
-# --- 新規ファイル処理 ---
+# ============ コア処理 ============
 def process_new_files():
+    start = datetime.now(TZ)
     files = list_files()
+    LAST_SCAN_EPOCH.labels(service=SERVICE_NAME).set(datetime.now(timezone.utc).timestamp())
+
     for entry in files:
         fname = entry.name
-        # ルート監視時も必ず "/filename"
-        path = f"/{fname}" if DROPBOX_FOLDER_PATH in ("", "/") \
-               else f"{DROPBOX_FOLDER_PATH.rstrip('/')}/{fname}"
+        FILES_SCANNED.labels(service=SERVICE_NAME).inc()
+        path = f"/{fname}" if DROPBOX_FOLDER_PATH in ("", "/") else f"{DROPBOX_FOLDER_PATH.rstrip('/')}/{fname}"
 
         content = download_file(path)
         if not content:
@@ -135,67 +141,82 @@ def process_new_files():
 
         h = file_hash(content)
         if h in PROCESSED_HASHES:
-            print(f"[スキップ] 重複 → {fname}")
             continue
         PROCESSED_HASHES.add(h)
+        FILES_NEW.labels(service=SERVICE_NAME).inc()
 
-        # バイナリは無視（必要になったら拡張）
         text = content.decode("utf-8", errors="ignore")
         summary = summarize_text(text)
 
         if NOTIFY_SUMMARY:
-            send_line(f"【要約】{fname}\n{summary}")
+            notify_line(f"【{SERVICE_NAME} 要約】{fname}\n{summary}")
         else:
-            print(f"[要約完了/通知OFF] {fname} -> {summary[:80]}...")
+            log.info("[要約] %s -> %s", fname, summary[:120].replace("\n"," "))
 
-# --- 非同期実行（webhook タイムアウト回避） ---
+    log.info("Scan finished (%s) files=%d new=%d",
+             start.strftime("%Y-%m-%d %H:%M:%S"),
+             len(files),
+             len(PROCESSED_HASHES))
+
 def _handle_async():
     try:
         process_new_files()
         if PARTNER_UPDATE_URL:
             try:
                 requests.post(PARTNER_UPDATE_URL, timeout=3)
-                print("[通知] 相手へ update-code 通知済")
             except Exception as e:
-                print(f"[通知エラー] {e}")
+                notify_error("partner_update", e)
     except Exception as e:
-        print(f"[非同期処理エラー] {e}")
-    finally:
-        # 処理の最後に heartbeat を GitHub へ
-        commit_last_run(note="webhook-processed")
+        notify_error("async", e)
 
-# --- Dropbox Webhook ---
+# ============ HTTP ============
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
         challenge = request.args.get("challenge")
         if challenge:
-            print("[Webhook認証] challenge を返します")
             return challenge, 200
         return "No challenge", 400
 
-    # POST: すぐ 200 を返して裏で処理
-    print("[Webhook受信] 非同期処理開始")
     Thread(target=_handle_async, daemon=True).start()
     return "", 200
 
-# --- 手動/相互連携トリガー ---
 @app.route("/update-code", methods=["POST"])
 def update_code():
-    print("[受信] update-code（非同期処理開始）")
     Thread(target=_handle_async, daemon=True).start()
     return "OK", 200
 
-# --- ステータス ---
-@app.route("/", methods=["GET"])
+@app.route("/metrics")
+def metrics():
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+@app.route("/healthz")
+def healthz():
+    try:
+        # 軽い健診：ルート一覧1回
+        _ = list_files()[:1]
+        payload = {
+            "service": SERVICE_NAME,
+            "status": "ok",
+            "hashes": len(PROCESSED_HASHES),
+            "time": datetime.now(TZ).isoformat()
+        }
+        return Response(json.dumps(payload), mimetype="application/json", status=200)
+    except Exception as e:
+        notify_error("healthz", e)
+        return "ng", 500
+
+@app.route("/")
 def home():
     files = list_files()
-    return "<h2>E.T Code BOT 稼働中</h2><br>" + "<br>".join([f.name for f in files])
+    names = "<br>".join([f.name for f in files])
+    return f"<h2>{SERVICE_NAME} BOT 起動中</h2><p>{names}</p>"
 
-# --- 実行 ---
+# ============ スケジューラ ============
+scheduler = BackgroundScheduler(timezone=str(TZ))
+scheduler.add_job(process_new_files, "interval", minutes=SCAN_INTERVAL_MIN, id="scan_job", max_instances=1, coalesce=True)
+scheduler.start()
+
 if __name__ == "__main__":
-    # 起動時にも heartbeat を1回実施（存在しなければ自動で作られる）
-    commit_last_run(note="service-start")
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
-    print("Auto-deploy test success")
